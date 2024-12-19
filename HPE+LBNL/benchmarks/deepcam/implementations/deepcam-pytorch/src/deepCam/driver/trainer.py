@@ -539,6 +539,13 @@ def train_epoch(pargs, comm_rank, comm_size,
                 train_loader,
                 logger, have_wandb,
                 disable_scheduler=False):
+    
+    if os.environ.get("WITH_PROFILER") == "1":
+        output_dir = os.getenv("OUTPUT_DIR")
+        profiler_output_dir = os.path.join(output_dir, "torch_profiler")
+        if comm_rank == 0:
+            if not os.path.exists(profiler_output_dir):
+                os.makedirs(profiler_output_dir)
 
     # get logger
     plog = PLogger.getInstance()
@@ -551,7 +558,11 @@ def train_epoch(pargs, comm_rank, comm_size,
     # epoch loop
     steps_in_epoch = 0
     start_time = time.perf_counter_ns()
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
     for inputs, label, filename in train_loader:
+        
+        start_event.record()
 
         # log step
         plog.event(plog.INTERVAL_START, key="step_start", metadata={"step_num": step, "epoch_num": epoch})
@@ -561,13 +572,27 @@ def train_epoch(pargs, comm_rank, comm_size,
             # send to device
             inputs = inputs.to(trainer.device)
             label = label.to(trainer.device)
-            
+        if os.environ.get("WITH_PROFILER") == "1" and step == 4:
+            prof = torch.profiler.profile(activities=[
+               torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU
+            ])
+            prof.__enter__()
         loss, outputs, current_lr = trainer.step(inputs, label, disable_scheduler=disable_scheduler)
-    
+        if os.environ.get("WITH_PROFILER") == "1" and step == 8:
+            prof.__exit__(None, None, None)
+            rank = torch.distributed.get_rank()
+            trace_file = os.path.join(profiler_output_dir, f"profiler_trace_{rank}.json")
+            prof.export_chrome_trace(trace_file)
+            
         # step counter
         step += 1
         steps_in_epoch += 1
-
+        
+        end_event.record()
+        torch.cuda.synchronize()
+        dt = start_event.elapsed_time(end_event)
+        if torch.distributed.get_rank() == 0:
+            print(f"step {step}: time {dt:.2f}ms")
 
         #log if requested
         if (pargs.logging_frequency > 0) and (step % pargs.logging_frequency == 0):
@@ -739,3 +764,4 @@ def train_epoch_profile(pargs, comm_rank, comm_size,
                 break
 
     return step
+

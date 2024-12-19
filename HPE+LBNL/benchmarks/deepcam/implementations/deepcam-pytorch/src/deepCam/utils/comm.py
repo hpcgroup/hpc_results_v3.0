@@ -24,6 +24,7 @@ import socket
 import datetime as dt
 import torch
 import torch.distributed as dist
+from datetime import timedelta
 
 _DATA_PARALLEL_GROUP = None
 _DATA_PARALLEL_ROOT = 0
@@ -289,15 +290,23 @@ def init(method, batchnorm_group_size=1, batchnorm_group_stride=1):
     elif method == "nccl-slurm":
         rank = int(os.getenv("SLURM_PROCID"))
         world_size = int(os.getenv("SLURM_NTASKS"))
-        address = os.getenv("SLURM_LAUNCH_NODE_IPADDR")
-        port = "29500"
+        address = os.getenv("MASTER_ADDR", "localhost")
+        port = os.getenv("MASTER_PORT", "29500")
+        print(f"MASTER_ADDR={address}, MASTER_PORT={port}")
+        print(f"RANK={rank}, WORLD_SIZE={world_size}")
+
+        init_method = "tcp://"
+        init_method += address + ":" + port
+
         os.environ["MASTER_ADDR"] = address
         os.environ["MASTER_PORT"] = port
 
         #init DDP
         dist.init_process_group(backend = "nccl",
                                 rank = rank,
-                                world_size = world_size)
+                                world_size = world_size,
+                                timeout=timedelta(seconds=7200000),
+                                init_method=init_method)
 
     elif method == "dummy":
         rank = 0
@@ -320,3 +329,4 @@ def init(method, batchnorm_group_size=1, batchnorm_group_stride=1):
     batchnorm_group = init_local_group(batchnorm_group_size, batchnorm_group_stride)
 
     return batchnorm_group
+
