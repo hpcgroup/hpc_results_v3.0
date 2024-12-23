@@ -539,14 +539,14 @@ def train_epoch(pargs, comm_rank, comm_size,
                 train_loader,
                 logger, have_wandb,
                 disable_scheduler=False):
-    
+    ''' 
     if os.environ.get("WITH_PROFILER") == "1":
         output_dir = os.getenv("OUTPUT_DIR")
         profiler_output_dir = os.path.join(output_dir, "torch_profiler")
         if comm_rank == 0:
             if not os.path.exists(profiler_output_dir):
                 os.makedirs(profiler_output_dir)
-
+    '''
     # get logger
     plog = PLogger.getInstance()
     
@@ -580,9 +580,12 @@ def train_epoch(pargs, comm_rank, comm_size,
         loss, outputs, current_lr = trainer.step(inputs, label, disable_scheduler=disable_scheduler)
         if os.environ.get("WITH_PROFILER") == "1" and step == 8:
             prof.__exit__(None, None, None)
+            '''
             rank = torch.distributed.get_rank()
             trace_file = os.path.join(profiler_output_dir, f"profiler_trace_{rank}.json")
             prof.export_chrome_trace(trace_file)
+            prof = None
+            '''
             
         # step counter
         step += 1
@@ -650,6 +653,18 @@ def train_epoch(pargs, comm_rank, comm_size,
 
     # also profile cleanup phase
     plog.event(plog.INTERVAL_START, key="epoch_summary_start", metadata={"step_num": step, "epoch_num": epoch})
+
+    if os.environ.get("WITH_PROFILER") == "1" and steps_in_epoch == step:
+        output_dir = os.getenv("OUTPUT_DIR")
+        profiler_output_dir = os.path.join(output_dir, "torch_profiler")
+        if comm_rank == 0:
+            if not os.path.exists(profiler_output_dir):
+                os.makedirs(profiler_output_dir)
+        torch.distributed.barrier()
+        rank = torch.distributed.get_rank()
+        trace_file = os.path.join(profiler_output_dir, f"profiler_trace_{rank}.json")
+        prof.export_chrome_trace(trace_file)
+
         
     # end of epoch logging
     # wait for the device to finish
